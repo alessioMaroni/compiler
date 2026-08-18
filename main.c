@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
-
+#include <stdlib.h>
+#include <elf.h>
 #include "tokens.h"
 
 int check_file_ptr(FILE* file_ptr, const char* file_name) {
@@ -33,6 +34,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // ==========================================
+    // FASE 1: Lettura .c -> Scrittura .s
+    // ==========================================
     {
         int x = 0;
         int i = 0;
@@ -40,16 +44,13 @@ int main(int argc, char* argv[]) {
         
         while((x = fgetc(c_file_ptr)) != EOF){
             char ch = (char)x;
-            printf("%c", ch);
 
             if(ch == ' ' || ch == '\n' || ch == '\t' || ch == '(' || ch == ')' || ch == '{' || ch == '}' || ch == ';') {
                 if (i > 0) {
                     token_found_buffer[i] = '\0';
                     
-                    char* verified_token = compile_token(asm_file_ptr_w, token_found_buffer, i);
-                    if (verified_token != NULL) {
-                        printf("[TOKEN FOUND] Token: %s\n", verified_token);
-                    }
+                    // Chiama compile_token definita in tokens.h
+                    compile_token(asm_file_ptr_w, token_found_buffer, i, c_file_ptr);
                     
                     i = 0;
                 }
@@ -68,6 +69,9 @@ int main(int argc, char* argv[]) {
     fclose(c_file_ptr);
     fclose(asm_file_ptr_w);
 
+    // ==========================================
+    // FASE 2: Lettura .s -> Scrittura .o (ELF)
+    // ==========================================
     FILE* asm_file_ptr_r = fopen(asm_file_name, "r");
     if(check_file_ptr(asm_file_ptr_r, asm_file_name) == 1) return 1;
 
@@ -75,7 +79,7 @@ int main(int argc, char* argv[]) {
     snprintf(object_file_name, sizeof(object_file_name), "%s", c_file_name);
     object_file_name[strlen(object_file_name) - 1] = 'o'; 
 
-    FILE* object_file_ptr = fopen(object_file_name, "w"); 
+    FILE* object_file_ptr = fopen(object_file_name, "wb"); 
     if(check_file_ptr(object_file_ptr, object_file_name) == 1) {
         fclose(asm_file_ptr_r);
         return 1;
@@ -84,15 +88,95 @@ int main(int argc, char* argv[]) {
     {
         int y = 0;
         int j = 0;
+        char token_found_buffer[32];
+        unsigned char text_section[1024];
+        
+        extern int buffer_index;
+        buffer_index = 0;
+
         while((y = fgetc(asm_file_ptr_r)) != EOF){
-            printf("%c", (char)y);
-            j++;
+            char ch = (char)y;
+
+            if(ch == ' ' || ch == '\n' || ch == '\t' || ch == ',' || ch == '$' || ch == ':') {
+                if (j > 0) {
+                    token_found_buffer[j] = '\0';
+                    
+                    // Se troviamo 'movl', leggiamo dinamicamente l'operando
+                    if (strcmp(token_found_buffer, S_TOKEN_MOVL) == 0) {
+                        char operand_buffer[32];
+                        int op_idx = 0;
+                        int next_ch;
+                        
+                        // Salta spazi e il simbolo $
+                        while((next_ch = fgetc(asm_file_ptr_r)) != EOF && (next_ch == ' ' || next_ch == '\t' || next_ch == '$' || next_ch == ','));
+                        
+                        // Legge il numero
+                        while(next_ch != EOF && next_ch != ' ' && next_ch != '\n' && next_ch != '\t' && next_ch != ',') {
+                            operand_buffer[op_idx++] = (char)next_ch;
+                            next_ch = fgetc(asm_file_ptr_r);
+                        }
+                        operand_buffer[op_idx] = '\0';
+                        
+                        assemble_s_token(text_section, token_found_buffer, operand_buffer);
+                    } else {
+                        // Per altri token che non hanno operandi (come .global, main:, ret)
+                        assemble_s_token(text_section, token_found_buffer, NULL);
+                    }
+                    
+                    j = 0;
+                }
+            } else {
+                if(j < sizeof(token_found_buffer) - 1) {
+                    token_found_buffer[j] = ch;
+                    j++;
+                } else {
+                    token_found_buffer[sizeof(token_found_buffer) - 1] = '\0';
+                    j = 0;
+                }
+            }
         }
+
+        // ==========================================
+        // FASE 3: Scrittura formato ELF 64-bit (.o)
+        // ==========================================
+        Elf64_Ehdr ehdr = {0};
+        ehdr.e_ident[EI_MAG0] = ELFMAG0;
+        ehdr.e_ident[EI_MAG1] = ELFMAG1;
+        ehdr.e_ident[EI_MAG2] = ELFMAG2;
+        ehdr.e_ident[EI_MAG3] = ELFMAG3;
+        ehdr.e_ident[EI_CLASS] = ELFCLASS64;
+        ehdr.e_ident[EI_DATA] = ELFDATA2LSB;
+        ehdr.e_ident[EI_VERSION] = EV_CURRENT;
+        ehdr.e_ident[EI_OSABI] = ELFOSABI_NONE;
+
+        ehdr.e_type = ET_REL;
+        ehdr.e_machine = EM_X86_64;
+        ehdr.e_version = EV_CURRENT;
+        ehdr.e_ehsize = sizeof(Elf64_Ehdr);
+        ehdr.e_shentsize = sizeof(Elf64_Shdr);
+        ehdr.e_shoff = sizeof(Elf64_Ehdr);
+        ehdr.e_shnum = 2; // Null section + .text section
+
+        fwrite(&ehdr, sizeof(Elf64_Ehdr), 1, object_file_ptr);
+
+        Elf64_Shdr shdr = {0};
+        shdr.sh_type = SHT_PROGBITS;
+        shdr.sh_flags = SHF_ALLOC | SHF_EXECINSTR;
+        shdr.sh_offset = sizeof(Elf64_Ehdr) + sizeof(Elf64_Shdr) * 2;
+        shdr.sh_size = buffer_index; // La dimensione è data dai byte accumulati
+
+        fwrite(&shdr, sizeof(Elf64_Shdr), 1, object_file_ptr);
+        
+        Elf64_Shdr null_shdr = {0};
+        fwrite(&null_shdr, sizeof(Elf64_Shdr), 1, object_file_ptr);
+
+        // Scriviamo il buffer con le istruzioni binarie
+        fwrite(text_section, 1, buffer_index, object_file_ptr);
     }
 
     fclose(asm_file_ptr_r);
     fclose(object_file_ptr);
     
-    printf("\n\n");
+    printf("Compilation complete: .o generated successfully!\n\n");
     return 0;
 }
