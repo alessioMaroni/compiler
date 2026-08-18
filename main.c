@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <elf.h>
 #include "tokens.h"
 
@@ -14,7 +15,7 @@ int check_file_ptr(FILE* file_ptr, const char* file_name) {
 
 int main(int argc, char* argv[]) {
     if(argc < 2){
-        printf("Error insufficient past data\n");
+        printf("Error: insufficient arguments provided\n");
         return 1;
     }
 
@@ -34,9 +35,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // ==========================================
-    // FASE 1: Lettura .c -> Scrittura .s
-    // ==========================================
     {
         int x = 0;
         int i = 0;
@@ -49,7 +47,6 @@ int main(int argc, char* argv[]) {
                 if (i > 0) {
                     token_found_buffer[i] = '\0';
                     
-                    // Chiama compile_token definita in tokens.h
                     compile_token(asm_file_ptr_w, token_found_buffer, i, c_file_ptr);
                     
                     i = 0;
@@ -69,9 +66,7 @@ int main(int argc, char* argv[]) {
     fclose(c_file_ptr);
     fclose(asm_file_ptr_w);
 
-    // ==========================================
-    // FASE 2: Lettura .s -> Scrittura .o (ELF)
-    // ==========================================
+
     FILE* asm_file_ptr_r = fopen(asm_file_name, "r");
     if(check_file_ptr(asm_file_ptr_r, asm_file_name) == 1) return 1;
 
@@ -85,11 +80,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    unsigned char text_section[1024];
+
     {
         int y = 0;
         int j = 0;
         char token_found_buffer[32];
-        unsigned char text_section[1024];
         
         extern int buffer_index;
         buffer_index = 0;
@@ -101,16 +97,13 @@ int main(int argc, char* argv[]) {
                 if (j > 0) {
                     token_found_buffer[j] = '\0';
                     
-                    // Se troviamo 'movl', leggiamo dinamicamente l'operando
                     if (strcmp(token_found_buffer, S_TOKEN_MOVL) == 0) {
                         char operand_buffer[32];
                         int op_idx = 0;
                         int next_ch;
                         
-                        // Salta spazi e il simbolo $
                         while((next_ch = fgetc(asm_file_ptr_r)) != EOF && (next_ch == ' ' || next_ch == '\t' || next_ch == '$' || next_ch == ','));
                         
-                        // Legge il numero
                         while(next_ch != EOF && next_ch != ' ' && next_ch != '\n' && next_ch != '\t' && next_ch != ',') {
                             operand_buffer[op_idx++] = (char)next_ch;
                             next_ch = fgetc(asm_file_ptr_r);
@@ -119,7 +112,6 @@ int main(int argc, char* argv[]) {
                         
                         assemble_s_token(text_section, token_found_buffer, operand_buffer);
                     } else {
-                        // Per altri token che non hanno operandi (come .global, main:, ret)
                         assemble_s_token(text_section, token_found_buffer, NULL);
                     }
                     
@@ -136,9 +128,6 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        // ==========================================
-        // FASE 3: Scrittura formato ELF 64-bit (.o)
-        // ==========================================
         Elf64_Ehdr ehdr = {0};
         ehdr.e_ident[EI_MAG0] = ELFMAG0;
         ehdr.e_ident[EI_MAG1] = ELFMAG1;
@@ -155,7 +144,7 @@ int main(int argc, char* argv[]) {
         ehdr.e_ehsize = sizeof(Elf64_Ehdr);
         ehdr.e_shentsize = sizeof(Elf64_Shdr);
         ehdr.e_shoff = sizeof(Elf64_Ehdr);
-        ehdr.e_shnum = 2; // Null section + .text section
+        ehdr.e_shnum = 2;
 
         fwrite(&ehdr, sizeof(Elf64_Ehdr), 1, object_file_ptr);
 
@@ -163,20 +152,80 @@ int main(int argc, char* argv[]) {
         shdr.sh_type = SHT_PROGBITS;
         shdr.sh_flags = SHF_ALLOC | SHF_EXECINSTR;
         shdr.sh_offset = sizeof(Elf64_Ehdr) + sizeof(Elf64_Shdr) * 2;
-        shdr.sh_size = buffer_index; // La dimensione è data dai byte accumulati
+        shdr.sh_size = buffer_index;
 
         fwrite(&shdr, sizeof(Elf64_Shdr), 1, object_file_ptr);
         
         Elf64_Shdr null_shdr = {0};
         fwrite(&null_shdr, sizeof(Elf64_Shdr), 1, object_file_ptr);
 
-        // Scriviamo il buffer con le istruzioni binarie
         fwrite(text_section, 1, buffer_index, object_file_ptr);
     }
 
     fclose(asm_file_ptr_r);
     fclose(object_file_ptr);
+
+    char exe_file_name[64];
+    snprintf(exe_file_name, sizeof(exe_file_name), "%s", c_file_name);
+    exe_file_name[strlen(exe_file_name) - 2] = '\0'; 
+
+    FILE* out = fopen(exe_file_name, "wb");
+    if (!out) {
+        printf("Error creating executable file\n");
+        return 1;
+    }
+
+    uint64_t base_addr = 0x400000;
+    uint64_t headers_size = sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr);
+
+    unsigned char start_wrapper[] = {
+        0xe8, 0x07, 0x00, 0x00, 0x00,
+        0x89, 0xc7,
+        0xb8, 0x3c, 0x00, 0x00, 0x00,
+        0x0f, 0x05
+    };
+
+    uint64_t entry_point = base_addr + headers_size;
+    uint64_t total_size = headers_size + sizeof(start_wrapper) + buffer_index;
+
+    Elf64_Ehdr ehdr = {0};
+    ehdr.e_ident[EI_MAG0] = ELFMAG0;
+    ehdr.e_ident[EI_MAG1] = ELFMAG1;
+    ehdr.e_ident[EI_MAG2] = ELFMAG2;
+    ehdr.e_ident[EI_MAG3] = ELFMAG3;
+    ehdr.e_ident[EI_CLASS] = ELFCLASS64;
+    ehdr.e_ident[EI_DATA] = ELFDATA2LSB;
+    ehdr.e_ident[EI_VERSION] = EV_CURRENT;
+    ehdr.e_ident[EI_OSABI] = ELFOSABI_NONE;
+
+    ehdr.e_type = ET_EXEC;
+    ehdr.e_machine = EM_X86_64;
+    ehdr.e_version = EV_CURRENT;
+    ehdr.e_entry = entry_point;
+    ehdr.e_phoff = sizeof(Elf64_Ehdr);
+    ehdr.e_ehsize = sizeof(Elf64_Ehdr);
+    ehdr.e_phentsize = sizeof(Elf64_Phdr);
+    ehdr.e_phnum = 1;
+
+    Elf64_Phdr phdr = {0};
+    phdr.p_type = PT_LOAD;
+    phdr.p_flags = PF_R | PF_X;
+    phdr.p_offset = 0;
+    phdr.p_vaddr = base_addr;
+    phdr.p_paddr = base_addr;
+    phdr.p_filesz = total_size;
+    phdr.p_memsz = total_size;
+    phdr.p_align = 0x1000;
+
+    fwrite(&ehdr, sizeof(Elf64_Ehdr), 1, out);
+    fwrite(&phdr, sizeof(Elf64_Phdr), 1, out);
+    fwrite(start_wrapper, sizeof(start_wrapper), 1, out);
+    fwrite(text_section, 1, buffer_index, out);
+
+    fclose(out);
+
+    chmod(exe_file_name, 0755);
     
-    printf("Compilation complete: .o generated successfully!\n\n");
+    printf("Compilation complete: executable generated successfully!\n\n");
     return 0;
 }
