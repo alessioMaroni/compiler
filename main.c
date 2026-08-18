@@ -148,16 +148,16 @@ int main(int argc, char* argv[]) {
 
         fwrite(&ehdr, sizeof(Elf64_Ehdr), 1, object_file_ptr);
 
+        Elf64_Shdr null_shdr = {0};
+        fwrite(&null_shdr, sizeof(Elf64_Shdr), 1, object_file_ptr);
+
         Elf64_Shdr shdr = {0};
         shdr.sh_type = SHT_PROGBITS;
         shdr.sh_flags = SHF_ALLOC | SHF_EXECINSTR;
-        shdr.sh_offset = sizeof(Elf64_Ehdr) + sizeof(Elf64_Shdr) * 2;
+        shdr.sh_offset = sizeof(Elf64_Ehdr) + (sizeof(Elf64_Shdr) * 2);
         shdr.sh_size = buffer_index;
 
         fwrite(&shdr, sizeof(Elf64_Shdr), 1, object_file_ptr);
-        
-        Elf64_Shdr null_shdr = {0};
-        fwrite(&null_shdr, sizeof(Elf64_Shdr), 1, object_file_ptr);
 
         fwrite(text_section, 1, buffer_index, object_file_ptr);
     }
@@ -179,7 +179,7 @@ int main(int argc, char* argv[]) {
     uint64_t headers_size = sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr);
 
     unsigned char start_wrapper[] = {
-        0xe8, 0x07, 0x00, 0x00, 0x00,
+        0xe8, 0x09, 0x00, 0x00, 0x00,
         0x89, 0xc7,
         0xb8, 0x3c, 0x00, 0x00, 0x00,
         0x0f, 0x05
