@@ -18,10 +18,10 @@ for i in itertools.count(1):
     run_result = subprocess.run(["./programs/program"])
 
     if run_result.returncode == return_value:
-        print(f"Iterazione {i}: Success (Codice: {return_value})")
+        print(f"Iteration {i}: Success (Code: {return_value})")
     else:
         print(
-            f"Iterazione {i}: Mismatch! Ottenuto {run_result.returncode},"
-            f" atteso {return_value}"
+            f"Iteration {i}: Mismatch! Got {run_result.returncode},"
+            f" expected {return_value}"
         )
         break

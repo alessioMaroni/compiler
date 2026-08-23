@@ -146,8 +146,8 @@ int main(int argc, char* argv[]) {
                 if (j > 0) {
                     token_found_buffer[j] = '\0';
                     
-                    // Special handling for instructions with operands (e.g., 'movl')
-                    if (strcmp(token_found_buffer, S_TOKEN_MOVL) == 0) {
+                    // Handling for instructions with operands (e.g., 'movl', 'addl')
+                    if (strcmp(token_found_buffer, S_TOKEN_MOVL) == 0 || strcmp(token_found_buffer, S_TOKEN_ADDL) == 0) {
                         char operand_buffer[32];
                         int op_idx = 0;
                         int next_ch;
