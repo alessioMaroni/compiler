@@ -12,7 +12,8 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <elf.h>
-#include "tokens.h"
+#include "assembler/assemble.h"
+#include "compiler/compile.h"
 
 /// @brief Helper function that checks if the value of the file pointer is different from NULL.
 ///
